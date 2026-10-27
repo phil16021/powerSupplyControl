@@ -1,0 +1,21 @@
+# Example configuration for the RD6030 control software.
+# All fields are optional and fall back to the defaults shown here.
+
+# --- serial / Modbus ---
+port = "/dev/ttyUSB0"        # Windows: "COM3", macOS: "/dev/tty.usbserial-*"
+baud_rate = 115200           # 9600..=115200
+slave_id = 1                 # 1..=247
+timeout_ms = 500             # >= 300 ms recommended
+poll_interval_ms = 100       # 50..=1000 ms (10..=20 Hz recommended)
+
+# --- HTTP server (REST API + streamable-HTTP MCP) ---
+[server]
+host = "127.0.0.1"
+port = 8080
+
+# --- telemetry logging ---
+[logging]
+enabled = false
+path = "rd6030-telemetry.csv"   # .jsonl for JSON Lines
+format = "csv"                  # "csv" or "jsonlines"
+interval_ms = 1000

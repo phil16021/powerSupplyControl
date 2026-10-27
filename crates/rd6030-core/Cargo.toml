@@ -1,0 +1,19 @@
+[package]
+name = "rd6030-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Async RD6030 device driver, register map, and control library"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-serial = { workspace = true }
+tokio-modbus = { workspace = true }
+tokio-util = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+csv = { workspace = true }

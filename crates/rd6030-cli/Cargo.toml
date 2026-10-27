@@ -1,0 +1,15 @@
+[package]
+name = "rd6030-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line interface for the Riden RD6030"
+
+[dependencies]
+rd6030-core = { workspace = true }
+rd6030-server = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

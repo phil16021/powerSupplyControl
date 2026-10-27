@@ -1,0 +1,52 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rd6030-core",
+    "crates/rd6030-cli",
+    "crates/rd6030-server",
+    "crates/rd6030-gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "Full control software for the Riden RD6030 programmable DC power supply"
+
+[workspace.dependencies]
+# --- async runtime & I/O ---
+tokio = { version = "1.38", features = ["full"] }
+tokio-serial = "5.5"
+tokio-modbus = { version = "0.17", default-features = false, features = ["rtu"] }
+tokio-util = "0.7"
+
+# --- errors & serialization ---
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# --- tracing / logging ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- time & csv ---
+chrono = { version = "0.4", features = ["serde"] }
+csv = "1.4"
+
+# --- CLI ---
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+# --- HTTP / API / MCP ---
+axum = "0.8"
+rmcp = { version = "3.8", features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server"] }
+
+# --- GUI ---
+eframe = "0.37"
+egui = "0.37"
+egui_plot = "0.38"
+
+# --- workspace-internal crates ---
+rd6030-core = { path = "crates/rd6030-core" }
+rd6030-server = { path = "crates/rd6030-server" }
