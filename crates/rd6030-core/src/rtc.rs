@@ -19,19 +19,39 @@ pub struct RtcTime {
 }
 
 impl RtcTime {
-    /// Decode an RTC snapshot read from registers 0x0030..=0x0035.
+    /// Decode an RTC snapshot read from registers 0x0030..=0x0035. Values
+    /// that do not fit their field are rejected (no silent truncation).
     pub fn from_regs(regs: &[u16]) -> Option<Self> {
         if regs.len() < 6 {
             return None;
         }
+        let b = |v: u16| u8::try_from(v).ok();
         Some(Self {
             year: regs[0],
-            month: regs[1] as u8,
-            day: regs[2] as u8,
-            hour: regs[3] as u8,
-            minute: regs[4] as u8,
-            second: regs[5] as u8,
+            month: b(regs[1])?,
+            day: b(regs[2])?,
+            hour: b(regs[3])?,
+            minute: b(regs[4])?,
+            second: b(regs[5])?,
         })
+    }
+
+    /// Check that this is a real calendar date/time.
+    pub fn validate(&self) -> Result<(), DeviceError> {
+        let date = chrono::NaiveDate::from_ymd_opt(
+            i32::from(self.year),
+            u32::from(self.month),
+            u32::from(self.day),
+        );
+        let time = chrono::NaiveTime::from_hms_opt(
+            u32::from(self.hour),
+            u32::from(self.minute),
+            u32::from(self.second),
+        );
+        if date.is_none() || time.is_none() || !(2000..=2099).contains(&self.year) {
+            return Err(DeviceError::OutOfRange(format!("invalid RTC time {self}")));
+        }
+        Ok(())
     }
 
     /// Encode as the six RTC registers (year, month, day, hour, minute, second).
@@ -82,6 +102,7 @@ impl Controller {
 
     /// Set the device RTC.
     pub async fn set_rtc(&self, time: RtcTime) -> Result<(), DeviceError> {
+        time.validate()?;
         self.device()
             .write_multiple(register::reg::RTC_YEAR, &time.to_regs())
             .await
@@ -113,6 +134,24 @@ mod tests {
         let decoded = RtcTime::from_regs(&regs).expect("valid");
         assert_eq!(t, decoded);
         assert_eq!(regs, [2026, 10, 27, 12, 30, 45]);
+    }
+
+    #[test]
+    fn rtc_validation() {
+        let ok = RtcTime {
+            year: 2024,
+            month: 2,
+            day: 29,
+            hour: 23,
+            minute: 59,
+            second: 59,
+        };
+        assert!(ok.validate().is_ok());
+        assert!(RtcTime { month: 13, ..ok }.validate().is_err());
+        assert!(RtcTime { year: 2023, ..ok }.validate().is_err()); // no Feb 29
+        assert!(RtcTime { hour: 24, ..ok }.validate().is_err());
+        assert!(RtcTime { year: 1999, ..ok }.validate().is_err());
+        assert!(RtcTime::from_regs(&[2026, 300, 1, 0, 0, 0]).is_none());
     }
 
     #[test]

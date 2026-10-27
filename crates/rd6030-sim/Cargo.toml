@@ -1,0 +1,15 @@
+[package]
+name = "rd6030-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Behavioural Riden RD6030 simulator (Modbus-RTU slave over a PTY or any byte stream)"
+
+[dependencies]
+rd6030-core = { workspace = true }
+tokio = { workspace = true }
+tokio-serial = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

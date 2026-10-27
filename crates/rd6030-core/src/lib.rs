@@ -17,12 +17,20 @@ pub mod model;
 pub mod preset;
 pub mod register;
 pub mod rtc;
+pub mod system;
 
 pub use battery::BatteryStatus;
+pub use config::Config;
 pub use controller::Controller;
-pub use driver::{Device, MockBackend, ModbusBackend, RtuBackend};
+pub use driver::{
+    Connector, Device, DriverOptions, Fault, FnConnector, MockBackend, ModbusBackend, RtuBackend,
+    SerialConnector,
+};
 pub use error::DeviceError;
 pub use logging::TelemetryLogger;
-pub use model::{DeviceInfo, DeviceTelemetry, ProtectionStatus};
-pub use preset::{Setpoint, PRESET_COUNT};
+pub use model::{
+    DeviceInfo, DeviceTelemetry, LinkState, LinkStatus, ProtectionStatus, TelemetrySample,
+};
+pub use preset::{Preset, PresetBank, Protection, Setpoint, PRESET_COUNT};
 pub use rtc::RtcTime;
+pub use system::SystemOptions;

@@ -1,21 +1,39 @@
 # Example configuration for the RD6030 control software.
 # All fields are optional and fall back to the defaults shown here.
+#
+# Lookup order: --config PATH, $RD6030_CONFIG, ./config.toml,
+# $XDG_CONFIG_HOME/rd6030/config.toml (~/.config/rd6030/config.toml),
+# then built-in defaults.
 
 # --- serial / Modbus ---
-port = "/dev/ttyUSB0"        # Windows: "COM3", macOS: "/dev/tty.usbserial-*"
-baud_rate = 115200           # 9600..=115200
-slave_id = 1                 # 1..=247
-timeout_ms = 500             # >= 300 ms recommended
+port = "/dev/ttyUSB0"        # /dev/rd6030 with packaging/99-rd6030.rules
+baud_rate = 115200           # 9600..=115200, must match the device menu
+slave_id = 1                 # 1..=247, must match the device menu
+timeout_ms = 500             # >= 300 ms; per transaction
 poll_interval_ms = 100       # 50..=1000 ms (10..=20 Hz recommended)
+min_gap_ms = 5               # idle gap between transactions (MCU protection)
+allow_unknown_model = false  # accept non-RD6030 model ids (wrong scaling!)
+
+# --- software limits (enforced for CLI, REST, MCP and GUI) ---
+[limits]
+max_voltage = 60.0           # <= 60 V
+max_current = 30.0           # <= 30 A
+
+# --- safety ---
+[safety]
+output_off_on_exit = false   # switch the output off when serve/mcp/gui exits
 
 # --- HTTP server (REST API + streamable-HTTP MCP) ---
 [server]
-host = "127.0.0.1"
+host = "127.0.0.1"           # non-loopback addresses require a token
 port = 8080
+# token = "change-me"        # require `Authorization: Bearer change-me`
+allow_calibration = false    # expose POST /api/calibrate/commit
 
-# --- telemetry logging ---
+# --- telemetry logging (used by `serve`) ---
 [logging]
 enabled = false
 path = "rd6030-telemetry.csv"   # .jsonl for JSON Lines
 format = "csv"                  # "csv" or "jsonlines"
 interval_ms = 1000
+append = false

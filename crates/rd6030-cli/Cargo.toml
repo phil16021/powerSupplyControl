@@ -9,7 +9,16 @@ description = "Command-line interface for the Riden RD6030"
 rd6030-core = { workspace = true }
 rd6030-server = { workspace = true }
 tokio = { workspace = true }
+tokio-serial = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+serde_json = { workspace = true }
+rd6030-sim = { workspace = true }
+tokio = { workspace = true }
+tokio-serial = { workspace = true }

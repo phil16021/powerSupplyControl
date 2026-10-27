@@ -8,6 +8,7 @@ description = "REST API and MCP server for the Riden RD6030"
 [dependencies]
 rd6030-core = { workspace = true }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 axum = { workspace = true }
 rmcp = { workspace = true }
 serde = { workspace = true }
@@ -16,3 +17,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+rd6030-sim = { workspace = true }
+rmcp = { workspace = true, features = ["client"] }

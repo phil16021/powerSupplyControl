@@ -3,11 +3,14 @@ name = "rd6030-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "egui-based GUI for the Riden RD6030"
+description = "egui/eframe GUI for the Riden RD6030"
 
 [dependencies]
 rd6030-core = { workspace = true }
 tokio = { workspace = true }
+tokio-serial = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 egui_plot = { workspace = true }

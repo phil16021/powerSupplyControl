@@ -57,8 +57,8 @@ mod tests {
 
     #[test]
     fn battery_decodes_block() {
-        // charging=1, vbat 13.2V, temp +25C / -5F, capacity 1500mAh, energy 1234 x10mWh
-        let regs = [1, 1320, 0, 25, 1, 5, 0x0000, 1500, 0x0000, 1234];
+        // charging=1, vbat 13.2V, temp +25C / -5F, capacity 1500mAh, energy 12340 mWh
+        let regs = [1, 1320, 0, 25, 1, 5, 0x0000, 1500, 0x0000, 12340];
         let b = BatteryStatus::from_regs(&regs).expect("valid");
         assert!(b.charging);
         assert_eq!(b.voltage, 13.2);

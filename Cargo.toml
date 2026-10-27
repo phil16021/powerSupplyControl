@@ -5,6 +5,7 @@ members = [
     "crates/rd6030-cli",
     "crates/rd6030-server",
     "crates/rd6030-gui",
+    "crates/rd6030-sim",
 ]
 
 [workspace.package]
@@ -19,6 +20,7 @@ tokio = { version = "1.38", features = ["full"] }
 tokio-serial = "5.5"
 tokio-modbus = { version = "0.17", default-features = false, features = ["rtu"] }
 tokio-util = "0.7"
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 # --- errors & serialization ---
 thiserror = "2"
@@ -30,9 +32,8 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# --- time & csv ---
+# --- time ---
 chrono = { version = "0.4", features = ["serde"] }
-csv = "1.4"
 
 # --- CLI ---
 anyhow = "1"
@@ -47,6 +48,11 @@ eframe = "0.37"
 egui = "0.37"
 egui_plot = "0.38"
 
+# --- testing ---
+tower = { version = "0.5", features = ["util"] }
+assert_cmd = "2"
+
 # --- workspace-internal crates ---
 rd6030-core = { path = "crates/rd6030-core" }
 rd6030-server = { path = "crates/rd6030-server" }
+rd6030-sim = { path = "crates/rd6030-sim" }

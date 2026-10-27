@@ -1,9 +1,9 @@
 //! `rd6030-server` binary — REST API and MCP server entry point.
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 use rd6030_core::config::Config;
-use rd6030_core::Controller;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(
@@ -12,12 +12,13 @@ use tracing_subscriber::EnvFilter;
     about = "REST API and MCP server for the Riden RD6030"
 )]
 struct Cli {
-    /// Path to the configuration file.
-    #[arg(long, default_value = "config.toml")]
-    config: String,
+    /// Path to the configuration file (default: $RD6030_CONFIG,
+    /// ./config.toml, $XDG_CONFIG_HOME/rd6030/config.toml).
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
 
     /// Serial port override (e.g. /dev/ttyUSB0, COM3).
-    #[arg(long)]
+    #[arg(long, global = true)]
     port: Option<String>,
 
     #[command(subcommand)]
@@ -34,23 +35,18 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_tracing();
+    rd6030_server::init_tracing("info");
     let cli = Cli::parse();
 
-    let mut config = Config::load(&cli.config)?;
+    let (mut config, source) = Config::discover(cli.config.as_deref())?;
     if let Some(port) = cli.port {
         config.port = port;
     }
-
-    let controller = Controller::connect(&config)?;
+    config.validate()?;
+    tracing::debug!(?source, "configuration loaded");
 
     match cli.command {
-        Command::Mcp => rd6030_server::mcp::serve_stdio(controller).await,
-        Command::Serve => rd6030_server::http::serve_http(controller, &config).await,
+        Command::Mcp => rd6030_server::run_mcp_stdio(&config).await,
+        Command::Serve => rd6030_server::run_serve(&config).await,
     }
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
 }

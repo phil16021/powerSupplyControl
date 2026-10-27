@@ -8,6 +8,12 @@
 pub const MAX_VOLTAGE: f32 = 60.0;
 pub const MAX_CURRENT: f32 = 30.0;
 
+/// Upper bounds accepted for the over-voltage / over-current protection
+/// thresholds (slightly above the rated output, as on the front panel).
+// VERIFY(HIL): exact firmware upper bounds for OVP/OCP on the RD6030.
+pub const MAX_OVP: f32 = 62.0;
+pub const MAX_OCP: f32 = 31.0;
+
 /// Holding-register addresses.
 pub mod reg {
     // Identity / info (read-only).
@@ -57,7 +63,98 @@ pub mod reg {
     pub const RTC_SECOND: u16 = 0x0035;
 
     // Calibration (write-only commit).
+    // VERIFY(HIL): the commit register/magic stems from the Gemini report and
+    // is not part of the community register map.
     pub const CALIBRATION_COMMIT: u16 = 0x0036;
+
+    // Calibration offset/gain words (V_OUT/V_BACK/I_OUT/I_BACK zero + scale).
+    pub const CALIBRATION_FIRST: u16 = 0x0037; // 55
+    pub const CALIBRATION_LAST: u16 = 0x003E; // 62
+
+    // System options (take-ok, take-out, boot-power, buzzer, logo, language,
+    // backlight).
+    pub const OPT_TAKE_OK: u16 = 0x0042; // 66
+    pub const OPT_TAKE_OUT: u16 = 0x0043; // 67
+    pub const OPT_BOOT_POWER: u16 = 0x0044; // 68
+    pub const OPT_BUZZER: u16 = 0x0045; // 69
+    pub const OPT_LOGO: u16 = 0x0046; // 70
+    pub const OPT_LANGUAGE: u16 = 0x0047; // 71
+    pub const OPT_BACKLIGHT: u16 = 0x0048; // 72
+
+    // Preset bank M0..M9: 4 words each (V, I, OVP, OCP) starting at 80.
+    // M0 holds the *active* OVP/OCP thresholds.
+    // VERIFY(HIL): layout taken from the community register map (Baldanos/rd6006).
+    pub const PRESET_BANK: u16 = 0x0050; // 80
+    pub const M0_OVP: u16 = 0x0052; // 82
+    pub const M0_OCP: u16 = 0x0053; // 83
+
+    /// Writing `0x1601` here reboots into the bootloader. Never writable.
+    pub const BOOTLOADER: u16 = 0x0100; // 256
+}
+
+/// Number of registers per preset slot (V, I, OVP, OCP).
+pub const PRESET_STRIDE: u16 = 4;
+
+/// First register of preset slot `slot` (M0..M9).
+pub fn preset_base(slot: u8) -> u16 {
+    reg::PRESET_BANK + u16::from(slot) * PRESET_STRIDE
+}
+
+/// Last register of the preset bank (M9 OCP).
+pub const PRESET_BANK_LAST: u16 = reg::PRESET_BANK + 10 * PRESET_STRIDE - 1;
+
+/// Whether every register in `addr..addr+count` may be written through the
+/// raw register API.
+///
+/// Only the documented R/W registers are allowed: setpoints, keypad lock,
+/// output, preset select, RTC, calibration words, system options and the
+/// preset bank. The calibration commit register (54) is deliberately *not*
+/// raw-writable (use `Controller::commit_calibration`), and everything else —
+/// most importantly the bootloader trigger at 256 — is rejected.
+pub fn is_writable_range(addr: u16, count: u16) -> bool {
+    if count == 0 {
+        return false;
+    }
+    let Some(last) = addr.checked_add(count - 1) else {
+        return false;
+    };
+    (addr..=last).all(is_writable)
+}
+
+fn is_writable(addr: u16) -> bool {
+    matches!(
+        addr,
+        reg::VSET
+            | reg::ISET
+            | reg::KEYPAD_LOCK
+            | reg::OUTPUT
+            | reg::PRESET
+            | reg::RTC_YEAR..=reg::RTC_SECOND
+            | reg::CALIBRATION_FIRST..=reg::CALIBRATION_LAST
+            | reg::OPT_TAKE_OK..=reg::OPT_BACKLIGHT
+            | reg::PRESET_BANK..=PRESET_BANK_LAST
+    )
+}
+
+/// Decoded model identifier (register 0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Model {
+    /// Riden RD6030 (raw id `60301`, or `6030` on some firmware).
+    Rd6030,
+    /// Any other Riden model (scaling may differ; e.g. P variants use finer
+    /// current resolution).
+    Other(u16),
+}
+
+impl Model {
+    /// Decode the raw model register. Riden encodes `model * 10 + variant`.
+    pub fn from_raw(raw: u16) -> Self {
+        if raw == 6030 || raw / 10 == 6030 {
+            Self::Rd6030
+        } else {
+            Self::Other(raw)
+        }
+    }
 }
 
 /// Magic value written to [`reg::CALIBRATION_COMMIT`] to persist calibration
@@ -77,7 +174,9 @@ pub const VOLTAGE_SCALE: f32 = 100.0; // 10 mV  -> V
 pub const CURRENT_SCALE: f32 = 100.0; // 10 mA  -> A
 pub const POWER_SCALE: f32 = 100.0; // 10 mW  -> W
 pub const CAPACITY_SCALE: f32 = 1000.0; // 1 mAh  -> Ah
-pub const ENERGY_SCALE: f32 = 100.0; // 10 mWh -> Wh
+                                        // VERIFY(HIL): the community map (Baldanos/rd6006) uses 1 mWh; the Gemini
+                                        // report claimed 10 mWh.
+pub const ENERGY_SCALE: f32 = 1000.0; // 1 mWh -> Wh
 pub const FIRMWARE_SCALE: f32 = 100.0; // e.g. 132 -> 1.32
 
 /// Convert a raw voltage register value to volts.
@@ -172,7 +271,7 @@ mod tests {
     #[test]
     fn capacity_and_energy_scaling() {
         assert_eq!(raw_to_capacity(1500), 1.5); // 1500 mAh -> 1.5 Ah
-        assert_eq!(raw_to_energy(1234), 12.34); // 1234 x 10 mWh -> 12.34 Wh
+        assert_eq!(raw_to_energy(12340), 12.34); // 12340 mWh -> 12.34 Wh
     }
 
     #[test]
@@ -198,5 +297,44 @@ mod tests {
         assert_eq!(reg::BATTERY_STATUS, 32);
         assert_eq!(reg::CALIBRATION_COMMIT, 54);
         assert_eq!(CALIBRATION_COMMIT_VALUE, 0x1501);
+        assert_eq!(reg::CALIBRATION_FIRST, 55);
+        assert_eq!(reg::CALIBRATION_LAST, 62);
+        assert_eq!(reg::OPT_BACKLIGHT, 72);
+        assert_eq!(reg::M0_OVP, 82);
+        assert_eq!(preset_base(0), 80);
+        assert_eq!(preset_base(9), 116);
+        assert_eq!(PRESET_BANK_LAST, 119);
+    }
+
+    #[test]
+    fn write_policy_allows_documented_registers_only() {
+        assert!(is_writable_range(reg::VSET, 2));
+        assert!(is_writable_range(reg::OUTPUT, 2)); // output + preset select
+        assert!(is_writable_range(reg::RTC_YEAR, 6));
+        assert!(is_writable_range(reg::PRESET_BANK, 40));
+        assert!(!is_writable_range(reg::PRESET_BANK, 41));
+        assert!(!is_writable_range(reg::MODEL, 1));
+        assert!(!is_writable_range(reg::VOUT, 1));
+        assert!(!is_writable_range(reg::CALIBRATION_COMMIT, 1));
+        assert!(!is_writable_range(reg::BOOTLOADER, 1));
+        assert!(!is_writable_range(reg::VSET, 0));
+        assert!(!is_writable_range(u16::MAX, 2));
+    }
+
+    #[test]
+    fn model_decoding() {
+        assert_eq!(Model::from_raw(60301), Model::Rd6030);
+        assert_eq!(Model::from_raw(6030), Model::Rd6030);
+        assert_eq!(Model::from_raw(60065), Model::Other(60065));
+    }
+
+    #[test]
+    fn scaling_round_trips_over_full_range() {
+        for raw in (0..=6000u16).step_by(7) {
+            assert_eq!(voltage_to_raw(raw_to_voltage(raw)), raw);
+        }
+        for raw in (0..=3000u16).step_by(3) {
+            assert_eq!(current_to_raw(raw_to_current(raw)), raw);
+        }
     }
 }

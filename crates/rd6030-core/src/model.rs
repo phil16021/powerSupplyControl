@@ -3,6 +3,7 @@
 use serde::Serialize;
 
 use crate::register;
+use crate::register::Model;
 
 /// Device identity and internal temperature readings.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -20,6 +21,11 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
+    /// Decoded model.
+    pub fn decoded_model(&self) -> Model {
+        Model::from_raw(self.model)
+    }
+
     /// Decode an info snapshot read from registers 0x0000..=0x0007.
     pub fn from_regs(regs: &[u16]) -> Option<Self> {
         if regs.len() < register::INFO_COUNT as usize {
@@ -101,6 +107,64 @@ impl DeviceTelemetry {
             output_enabled: regs[8] == 1,
         })
     }
+}
+
+/// A telemetry snapshot together with when it was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct TelemetrySample {
+    /// The decoded register snapshot.
+    #[serde(flatten)]
+    pub telemetry: DeviceTelemetry,
+    /// Wall-clock time the response was received.
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Monotonically increasing sample number (starts at 1).
+    pub seq: u64,
+    /// Monotonic receive time, used for freshness checks.
+    #[serde(skip)]
+    pub received_at: tokio::time::Instant,
+}
+
+impl TelemetrySample {
+    /// Age of the sample relative to now.
+    pub fn age(&self) -> std::time::Duration {
+        self.received_at.elapsed()
+    }
+}
+
+/// Connection state of the serial link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkState {
+    /// The port has not been opened successfully yet.
+    #[default]
+    Connecting,
+    /// The last transaction succeeded.
+    Connected,
+    /// Recent transactions failed; the driver is retrying.
+    Degraded,
+    /// The port could not be (re)opened or the device stopped answering.
+    Disconnected,
+}
+
+/// Link state plus driver statistics, published by the device actor.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+pub struct LinkStatus {
+    /// Current link state.
+    pub state: LinkState,
+    /// Device identity read during the last (re)connect handshake.
+    pub info: Option<DeviceInfo>,
+    /// Number of consecutive failed transactions.
+    pub consecutive_errors: u32,
+    /// Total transactions attempted.
+    pub requests: u64,
+    /// Total failed transactions.
+    pub errors: u64,
+    /// Total transactions that timed out.
+    pub timeouts: u64,
+    /// Number of successful port (re)opens.
+    pub connects: u64,
+    /// The most recent error message, if any.
+    pub last_error: Option<String>,
 }
 
 #[cfg(test)]
