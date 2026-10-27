@@ -1,0 +1,16 @@
+# udev rule for the Riden RD6030 (CH340 USB-UART bridge, 1a86:7523).
+#
+# * grants the `dialout` group access,
+# * creates a stable symlink /dev/rd6030,
+# * tells ModemManager to leave the port alone (it probes ttyUSB devices
+#   with AT commands, which corrupts Modbus traffic).
+#
+# Install:
+#   sudo cp packaging/99-rd6030.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# The CH340 is a generic chip used by many adapters. If you have several,
+# pin the rule to your unit with ATTRS{serial} or KERNELS (see
+# `udevadm info -a -n /dev/ttyUSB0`).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", \
+  GROUP="dialout", MODE="0660", SYMLINK+="rd6030", ENV{ID_MM_DEVICE_IGNORE}="1"

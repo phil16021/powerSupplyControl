@@ -1,0 +1,32 @@
+# systemd unit for the RD6030 REST + MCP server.
+#
+# Install:
+#   sudo install -m 0755 target/release/rd6030-server /usr/local/bin/
+#   sudo install -D -m 0640 config.example.toml /etc/rd6030/config.toml
+#   sudo cp packaging/rd6030-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rd6030-server
+#
+# The server starts even when the supply is unplugged and reconnects in the
+# background. Use port = "/dev/rd6030" (see 99-rd6030.rules).
+[Unit]
+Description=Riden RD6030 control server (REST API + MCP)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/rd6030-server --config /etc/rd6030/config.toml serve
+Environment=RUST_LOG=info
+DynamicUser=yes
+SupplementaryGroups=dialout
+Restart=on-failure
+RestartSec=5
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+StateDirectory=rd6030
+WorkingDirectory=/var/lib/rd6030
+
+[Install]
+WantedBy=multi-user.target
