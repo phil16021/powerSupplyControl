@@ -83,7 +83,8 @@ Link: CH340 via usbip (Hyper-V host → Ubuntu VM), 115200 8N1, slave 1. No load
 | Power cycle | The CH340 is powered by the PSU, so switching it off removes the USB device. One timeout, then down; link up < 1 s after re-enumeration (13.3 s gap). After boot: output **off** (boot power = off), setpoint = **M0 V/I**, RTC kept running |
 | M0 / front panel (M4) | Setpoints set on the front panel are stored in M0 and restored at power-on (60 V / 1 A set on the panel → 60 V / 1 A after the power cycle). Modbus setpoint writes are not |
 | Current accuracy | Confirmed with a multimeter in series: display 0.30 A, meter 312.6 mA |
-| Not tested | M2 energy scale (no battery), M3 calibration (deliberately), voltage accuracy against a voltmeter, GUI on screen |
+| Voltage accuracy (multimeter at the terminals, 187.8 Ω load) | PSU 4.99–5.00 / 20.01 / 40.00–40.01 / 60.02 V vs meter 5.009 / 20.00 / 40.01 / 60.05 V → deviation ≤ 30 mV (≤ 0.2 %), within the 10 mV resolution plus meter tolerance |
+| Not tested | M2 energy scale (no battery), M3 calibration (deliberately), GUI on screen |
 
 Bugs found and fixed by this run:
 
