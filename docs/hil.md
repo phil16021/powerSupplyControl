@@ -79,7 +79,11 @@ Link: CH340 via usbip (Hyper-V host → Ubuntu VM), 115200 8N1, slave 1. No load
 | OCP on 248.3 Ω | OCP 0.10 A at 121 mA → trip, `ocp` |
 | CC | Iset 30 mA / 20 mA at 40 V → CC flag set, Vout 34.0 V / 26.4 V (regulation a few mA above the setpoint at this tiny current) |
 | OCP | OCP 0.02 A at ~30–40 mA → output off, register 16 = 2 (`ocp`), latched until output on |
-| Not tested | M2 energy scale (no battery), M3 calibration (deliberately), absolute accuracy (no multimeter), M6 replug, power-cycle behaviour, GUI on screen |
+| Replug (M6) | USB pulled at the host for ~15 s: degraded → down → **link up 4 s after the kernel re-attached `ttyUSB0`**, telemetry resumed without restart (18.4 s gap in total) |
+| Power cycle | The CH340 is powered by the PSU, so switching it off removes the USB device. One timeout, then down; link up < 1 s after re-enumeration (13.3 s gap). After boot: output **off** (boot power = off), setpoint = **M0 V/I**, RTC kept running |
+| M0 / front panel (M4) | Setpoints set on the front panel are stored in M0 and restored at power-on (60 V / 1 A set on the panel → 60 V / 1 A after the power cycle). Modbus setpoint writes are not |
+| Current accuracy | Confirmed with a multimeter in series: display 0.30 A, meter 312.6 mA |
+| Not tested | M2 energy scale (no battery), M3 calibration (deliberately), voltage accuracy against a voltmeter, GUI on screen |
 
 Bugs found and fixed by this run:
 
