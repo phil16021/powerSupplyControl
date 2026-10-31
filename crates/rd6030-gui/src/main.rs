@@ -399,6 +399,225 @@ impl App {
         }
     }
 
+    /// Switch the output on or off.
+    fn send_output(&self, on: bool) {
+        self.spawn(move |c, s| async move {
+            match c.set_output(on).await {
+                Ok(()) => s.ok(if on {
+                    "Output enabled"
+                } else {
+                    "Output disabled"
+                }),
+                Err(err) => s.err(&err),
+            }
+        });
+    }
+
+    /// Write the edited setpoint (`vset`/`iset`) to the device.
+    fn apply_setpoint(&self) {
+        let sp = Setpoint {
+            voltage: round_centi(self.vset),
+            current: round_centi(self.iset),
+        };
+        self.spawn(move |c, s| async move {
+            match c.set_setpoint(sp).await {
+                Ok(()) => {
+                    *s.setpoint.lock().unwrap() = Some(sp);
+                    s.ok(format!(
+                        "Setpoint {:.2} V / {:.2} A applied",
+                        sp.voltage, sp.current
+                    ));
+                }
+                Err(err) => s.err(&err),
+            }
+        });
+    }
+
+    /// The simple control panel: big output button, live values with bars
+    /// and setpoint sliders that write when released.
+    fn quick_panel(&mut self, ui: &mut egui::Ui, t: &DeviceTelemetry, fresh: bool) {
+        let limits = self.controller().limits();
+        let device_sp = *self.shared.setpoint.lock().unwrap();
+        let tripped = t.protection != rd6030_core::ProtectionStatus::Ok;
+
+        ui.columns(2, |cols| {
+            // Left: output switch and state badges.
+            let ui = &mut cols[0];
+            ui.horizontal(|ui| {
+                let (label, fill, command) = output_button(fresh, t.output_enabled);
+                let big = egui::Button::new(
+                    egui::RichText::new(label)
+                        .size(26.0)
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(fill)
+                .min_size(egui::vec2(230.0, 72.0));
+                let hover = match (fresh, command) {
+                    (false, _) => "No live data: click switches the output OFF",
+                    (true, true) => "Click to switch the output ON",
+                    (true, false) => "Click to switch the output OFF",
+                };
+                if ui.add(big).on_hover_text(hover).clicked() {
+                    self.send_output(command);
+                }
+                let off = egui::Button::new(
+                    egui::RichText::new("■ OFF")
+                        .size(20.0)
+                        .strong()
+                        .color(egui::Color32::WHITE),
+                )
+                .fill(RED)
+                .min_size(egui::vec2(96.0, 72.0));
+                if ui.add(off).on_hover_text("Switch the output off").clicked() {
+                    self.send_output(false);
+                }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if !fresh {
+                    badge(ui, "NO LIVE DATA", egui::Color32::GRAY);
+                } else {
+                    if t.constant_current {
+                        badge(ui, "CC", ORANGE);
+                    } else {
+                        badge(ui, "CV", GREEN);
+                    }
+                    if tripped {
+                        let prot = format!("{:?}", t.protection).to_uppercase();
+                        badge(ui, &format!("{prot} TRIPPED"), RED);
+                    } else {
+                        badge(ui, "PROTECTION OK", IDLE);
+                    }
+                }
+            });
+
+            // Right: big readouts with bars.
+            let ui = &mut cols[1];
+            let value = |v: f32, unit: &str| {
+                if fresh {
+                    format!("{v:6.2} {unit}")
+                } else {
+                    format!("{:>6} {unit}", "--.--")
+                }
+            };
+            let rows = [
+                (
+                    "Vout",
+                    t.voltage_out,
+                    "V",
+                    limits.max_voltage,
+                    device_sp.map(|s| s.voltage),
+                    false,
+                ),
+                (
+                    "Iout",
+                    t.current_out,
+                    "A",
+                    limits.max_current,
+                    device_sp.map(|s| s.current),
+                    t.constant_current,
+                ),
+            ];
+            for (name, v, unit, max, set, limiting) in rows {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(name).size(16.0));
+                    ui.label(egui::RichText::new(value(v, unit)).monospace().size(28.0));
+                });
+                let (frac, color) = bar(v, max, fresh, limiting, tripped);
+                let text = match set {
+                    Some(s) => format!("set {s:.2} {unit}  ·  max {max:.2} {unit}"),
+                    None => format!("max {max:.2} {unit}"),
+                };
+                ui.add(egui::ProgressBar::new(frac).fill(color).text(text));
+            }
+            ui.horizontal(|ui| {
+                ui.label(format!("Pout {}", value(t.power_out, "W")));
+                ui.add_space(12.0);
+                ui.label(format!("Vin {}", value(t.voltage_in, "V")));
+            });
+        });
+
+        // Full width: setpoint sliders, written when released.
+        ui.add_space(8.0);
+        let enabled = self.edits_loaded;
+        let mut commit = false;
+        ui.spacing_mut().slider_width = (ui.available_width() - 330.0).max(150.0);
+        let sliders = [
+            (
+                "Voltage",
+                &mut self.vset,
+                limits.max_voltage,
+                0.1,
+                " V",
+                false,
+            ),
+            // Logarithmic: 0–30 A on one slider still allows mA-level
+            // adjustments at the low end.
+            (
+                "Current",
+                &mut self.iset,
+                limits.max_current,
+                0.01,
+                " A",
+                true,
+            ),
+        ];
+        for (name, target, max, step, suffix, log) in sliders {
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    [70.0, 24.0],
+                    egui::Label::new(egui::RichText::new(name).size(16.0)),
+                );
+                if ui
+                    .add_enabled(
+                        enabled,
+                        egui::Button::new("−").min_size(egui::vec2(28.0, 24.0)),
+                    )
+                    .clicked()
+                {
+                    *target = round_centi((*target - step).max(0.0));
+                    commit = true;
+                }
+                let r = ui.add_enabled(
+                    enabled,
+                    egui::Slider::new(target, 0.0..=max)
+                        .step_by(0.01)
+                        .fixed_decimals(2)
+                        .logarithmic(log)
+                        .smallest_positive(0.01)
+                        .suffix(suffix),
+                );
+                commit |= r.drag_stopped() || (r.changed() && !r.dragged());
+                if ui
+                    .add_enabled(
+                        enabled,
+                        egui::Button::new("+").min_size(egui::vec2(28.0, 24.0)),
+                    )
+                    .clicked()
+                {
+                    *target = round_centi((*target + step).min(max));
+                    commit = true;
+                }
+                ui.weak(format!("max {max:.2}{suffix}"))
+                    .on_hover_text("Software limit ([limits] in the config)");
+            });
+        }
+        if commit {
+            self.apply_setpoint();
+        }
+        ui.horizontal(|ui| {
+            if !enabled {
+                ui.weak("Waiting for the device setpoint…");
+            } else {
+                ui.weak("Drag and release (or −/+) to apply.");
+                if let Some(sp) = device_sp {
+                    ui.weak(format!("Device: {:.2} V / {:.2} A", sp.voltage, sp.current));
+                }
+            }
+        });
+    }
+
     /// `fresh` is false while there is no recent telemetry: the displayed
     /// output/lock state is then unknown, so state-dependent toggles must not
     /// be offered (a toggle built from a default "off" would switch ON).
@@ -416,7 +635,11 @@ impl App {
                     .speed(0.05)
                     .fixed_decimals(2)
                     .suffix(" V"),
-            );
+            )
+            .on_hover_text(format!(
+                "Software limit {:.2} V ([limits] max_voltage in the config)",
+                limits.max_voltage
+            ));
             ui.label("I:");
             ui.add(
                 egui::DragValue::new(&mut self.iset)
@@ -424,29 +647,22 @@ impl App {
                     .speed(0.05)
                     .fixed_decimals(2)
                     .suffix(" A"),
-            );
+            )
+            .on_hover_text(format!(
+                "Software limit {:.2} A ([limits] max_current in the config)",
+                limits.max_current
+            ));
+            ui.weak(format!(
+                "max {:.2} V / {:.2} A",
+                limits.max_voltage, limits.max_current
+            ));
             // Never write the placeholder 0 V / 0 A before the device
             // setpoint has been loaded into the edit fields.
             let apply = ui
                 .add_enabled(self.edits_loaded, egui::Button::new("Apply"))
                 .on_disabled_hover_text("Waiting for the device setpoint");
             if apply.clicked() {
-                let sp = Setpoint {
-                    voltage: self.vset,
-                    current: self.iset,
-                };
-                self.spawn(move |c, s| async move {
-                    match c.set_setpoint(sp).await {
-                        Ok(()) => {
-                            *s.setpoint.lock().unwrap() = Some(sp);
-                            s.ok(format!(
-                                "Setpoint {:.2} V / {:.2} A applied",
-                                sp.voltage, sp.current
-                            ));
-                        }
-                        Err(err) => s.err(&err),
-                    }
-                });
+                self.apply_setpoint();
             }
             if let Some(sp) = device_sp {
                 ui.weak(format!("device: {:.2} V / {:.2} A", sp.voltage, sp.current));
@@ -476,17 +692,7 @@ impl App {
                 .clicked();
             let off = ui.button("Off").clicked();
             if on || off {
-                let output = on;
-                self.spawn(move |c, s| async move {
-                    match c.set_output(output).await {
-                        Ok(()) => s.ok(if output {
-                            "Output enabled"
-                        } else {
-                            "Output disabled"
-                        }),
-                        Err(err) => s.err(&err),
-                    }
-                });
+                self.send_output(on);
             }
             let mut locked = t.keypad_locked;
             let lock = ui
@@ -636,60 +842,11 @@ impl eframe::App for App {
             .show(ui, |ui| self.side_panel(ui));
 
         egui::CentralPanel::default().show(ui, |ui| {
-            ui.heading("Output");
-            let value = |v: f32, unit: &str| {
-                if fresh {
-                    format!("{v:>6.2} {unit}")
-                } else {
-                    format!("{:>6} {unit}", "--.--")
-                }
-            };
-            ui.horizontal(|ui| {
-                for (label, text) in [
-                    ("Vout", value(telemetry.voltage_out, "V")),
-                    ("Iout", value(telemetry.current_out, "A")),
-                    ("Pout", value(telemetry.power_out, "W")),
-                    ("Vin", value(telemetry.voltage_in, "V")),
-                ] {
-                    ui.label(label);
-                    ui.add(egui::Label::new(
-                        egui::RichText::new(text).monospace().size(22.0),
-                    ));
-                    ui.add_space(12.0);
-                }
-            });
-            ui.horizontal(|ui| {
-                ui.label(format!(
-                    "Mode: {}",
-                    if telemetry.constant_current {
-                        "CC"
-                    } else {
-                        "CV"
-                    }
-                ));
-                let prot = format!("{:?}", telemetry.protection).to_uppercase();
-                if telemetry.protection == rd6030_core::ProtectionStatus::Ok {
-                    ui.label(format!("Protection: {prot}"));
-                } else {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(220, 60, 60),
-                        format!("Protection: {prot} tripped"),
-                    );
-                }
-                ui.label(format!(
-                    "Output: {}",
-                    if telemetry.output_enabled {
-                        "ON"
-                    } else {
-                        "OFF"
-                    }
-                ));
-                if !fresh {
-                    ui.colored_label(egui::Color32::GRAY, "(no live data)");
-                }
-            });
+            self.quick_panel(ui, &telemetry, fresh);
             ui.separator();
-            self.controls(ui, &telemetry, fresh);
+            egui::CollapsingHeader::new("Advanced (exact values, presets, protection)")
+                .id_salt("advanced")
+                .show(ui, |ui| self.controls(ui, &telemetry, fresh));
             ui.separator();
             ui.heading("History");
             self.plots(ui);
@@ -698,6 +855,58 @@ impl eframe::App for App {
         // Keep refreshing so live telemetry stays current.
         ui.ctx().request_repaint_after(Duration::from_millis(100));
     }
+}
+
+const GREEN: egui::Color32 = egui::Color32::from_rgb(40, 160, 70);
+const RED: egui::Color32 = egui::Color32::from_rgb(200, 50, 50);
+const AMBER: egui::Color32 = egui::Color32::from_rgb(215, 160, 30);
+const ORANGE: egui::Color32 = egui::Color32::from_rgb(230, 120, 30);
+const IDLE: egui::Color32 = egui::Color32::from_rgb(75, 75, 82);
+
+/// The big output button: label, fill colour and the output state a click
+/// requests. Without fresh telemetry the real state is unknown, so the only
+/// command offered is "off" (the safe direction).
+fn output_button(fresh: bool, enabled: bool) -> (&'static str, egui::Color32, bool) {
+    match (fresh, enabled) {
+        (false, _) => ("● OUTPUT ?", AMBER, false),
+        (true, true) => ("● OUTPUT ON", GREEN, false),
+        (true, false) => ("○ OUTPUT OFF", IDLE, true),
+    }
+}
+
+/// Fill fraction and colour of a measurement bar.
+fn bar(value: f32, max: f32, fresh: bool, limiting: bool, tripped: bool) -> (f32, egui::Color32) {
+    let frac = if max > 0.0 && value.is_finite() {
+        (value / max).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let color = if !fresh {
+        egui::Color32::GRAY
+    } else if tripped {
+        RED
+    } else if limiting {
+        ORANGE
+    } else {
+        GREEN
+    };
+    (frac, color)
+}
+
+/// Round to the 10 mV / 10 mA device resolution.
+fn round_centi(x: f32) -> f32 {
+    (x * 100.0).round() / 100.0
+}
+
+/// A small coloured label.
+fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    ui.label(
+        egui::RichText::new(format!(" {text} "))
+            .strong()
+            .size(15.0)
+            .color(egui::Color32::WHITE)
+            .background_color(color),
+    );
 }
 
 /// Last path component of a port path, for compact display.
@@ -717,4 +926,35 @@ fn list_ports() -> Vec<String> {
     }
     ports.dedup();
     ports
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_button_never_switches_on_without_fresh_data() {
+        assert_eq!(output_button(false, false), ("● OUTPUT ?", AMBER, false));
+        assert!(!output_button(false, true).2);
+        assert_eq!(output_button(true, true), ("● OUTPUT ON", GREEN, false));
+        assert_eq!(output_button(true, false), ("○ OUTPUT OFF", IDLE, true));
+    }
+
+    #[test]
+    fn bar_clamps_and_colours() {
+        assert_eq!(bar(30.0, 60.0, true, false, false), (0.5, GREEN));
+        assert_eq!(bar(80.0, 60.0, true, false, false).0, 1.0);
+        assert_eq!(bar(-1.0, 60.0, true, false, false).0, 0.0);
+        assert_eq!(bar(1.0, 0.0, true, false, false).0, 0.0);
+        assert_eq!(bar(f32::NAN, 60.0, true, false, false).0, 0.0);
+        assert_eq!(bar(1.0, 2.0, true, true, false).1, ORANGE);
+        assert_eq!(bar(1.0, 2.0, true, true, true).1, RED);
+        assert_eq!(bar(1.0, 2.0, false, true, true).1, egui::Color32::GRAY);
+    }
+
+    #[test]
+    fn centi_rounding() {
+        assert_eq!(round_centi(4.9 + 0.1), 5.0);
+        assert_eq!(round_centi(0.1 + 0.2), 0.3);
+    }
 }
