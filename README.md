@@ -87,7 +87,7 @@ The baud rate (default 115200) and slave address (default 1) must match the supp
 - After a transport error the port is reopened, which re-syncs framing. Reconnects back off
   exponentially, so unplugging and replugging USB just works.
 - A published link state and counters (requests, errors, timeouts, reconnects).
-- 10–20 Hz polling with timestamped, sequence-numbered samples. Stale data is never shown as live.
+- Polling at up to 10–20 Hz (the RD6030 answers in 70–150 ms, so about 7 samples/s in practice) with timestamped, sequence-numbered samples. Stale data is never shown as live.
 - A minimum gap between frames protects the device MCU, and polling stays fair under command floods.
 
 **Observability**
