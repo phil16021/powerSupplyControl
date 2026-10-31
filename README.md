@@ -11,19 +11,21 @@ Rust. It talks to the supply over USB (CH340 UART bridge) using **Modbus RTU** a
 - a scriptable **CLI** with `--json` output,
 - a **REST API** with live telemetry over Server-Sent Events and bearer-token auth,
 - an **MCP server**, so LLM clients such as Claude Desktop can operate the supply within your limits,
-- a desktop **GUI** with live plots,
+- a desktop **GUI** with a big colour-coded output switch, setpoint sliders, live bars and plots,
 - a **simulator**, so all of the above can be run and tested without hardware.
+
+Tested against a real RD6030 (firmware 1.47): see the [hardware test results](docs/hil.md#results-first-hardware-run-2026-10-31).
 
 ![GUI showing live telemetry while the load steps through CV and CC operation](docs/gui.png)
 
 <table>
 <tr>
-<td width="50%"><img src="docs/gui-protection.png" alt="GUI after an over-current protection trip"><br><sub>Over-current protection trip: the output switches off and the status turns red.</sub></td>
+<td width="50%"><img src="docs/gui-protection.png" alt="GUI after an over-current protection trip"><br><sub>Over-current protection trip: the output switches off and the badge turns red.</sub></td>
 <td width="50%"><img src="docs/cli.png" alt="CLI session"><br><sub>CLI: identity, setpoints, live CV/CC telemetry, limit enforcement.</sub></td>
 </tr>
 <tr>
 <td width="50%"><img src="docs/rest.png" alt="REST API session"><br><sub>REST API: token auth, 422 on limit violations, health counters, SSE stream.</sub></td>
-<td width="50%"><img src="docs/gui-disconnected.png" alt="GUI without a device"><br><sub>No device? The GUI starts anyway, shows why, and reconnects in the background.</sub></td>
+<td width="50%"><img src="docs/gui-disconnected.png" alt="GUI without a device"><br><sub>No device? The GUI starts anyway, shows why, and reconnects in the background. Without live data the output button only switches off.</sub></td>
 </tr>
 </table>
 
@@ -280,9 +282,14 @@ not exposed. Errors come back as readable tool errors, so the model can correct 
 
 - Starts without a device. A port picker and a link indicator show *connected*, *degraded* or
   *disconnected* along with the last error.
-- Large live readouts that show `--.--` when the data is stale, CV/CC mode, and protection trips in red.
-- Editors for the setpoint and OVP/OCP, with the device's current values next to them, re-read every
-  2 s so front-panel changes show up.
+- A big **output button**: green when on, grey when off, amber when there is no live data (a click
+  then only switches off), plus an always-available red **OFF** button.
+- Large live readouts with **bars** against the software limits: green in CV, orange when the current
+  limit is active (CC), red on an OVP/OCP trip, `--.--` when the data is stale.
+- **Setpoint sliders** (logarithmic for current, so 0–30 A and mA steps fit on one slider) with −/+
+  fine steps. They write when released, never while dragging, and show the configured limit.
+- An *Advanced* section with exact editors for the setpoint and OVP/OCP, with the device's current
+  values next to them, re-read every 2 s so front-panel changes show up.
 - Preset recall, keypad lock, RTC sync, device and battery info.
 - V / I / P plots over the last 120 s on a shared time axis.
 
@@ -350,8 +357,8 @@ Debugging aids:
 ## Register reference
 
 32-bit values span two registers, high word first (big-endian). Entries marked † come from the
-community register map (Baldanos/rd6006, riden-dongle) and are queued for hardware verification in
-[`docs/hil.md`](docs/hil.md).
+community register map (Baldanos/rd6006, riden-dongle) and are still unverified on hardware; everything
+else was confirmed on an RD6030 with firmware 1.47 (see [`docs/hil.md`](docs/hil.md)).
 
 | Address | Register | Scale | Access |
 |---------|----------|-------|--------|
@@ -363,17 +370,17 @@ community register map (Baldanos/rd6006, riden-dongle) and are queued for hardwa
 | 10 / 11 | Vout / Iout | 10 mV / 10 mA | R |
 | 12–13 | Pout | u32, 10 mW | R |
 | 14 | Vin | 10 mV | R |
-| 15 | Keypad lock | 0/1 | R/W |
+| 15 | Keypad lock (reads 1 while remote-controlled; fw 1.47 ignores writes) | 0/1 | R/W |
 | 16 | Protection (0 OK, 1 OVP, 2 OCP) | — | R |
 | 17 | CV/CC (0 CV, 1 CC) | — | R |
 | 18 | Output enable | 0/1 | R/W |
-| 19 | Preset recall (M0–M9) | 0–9 | R/W |
+| 19 | Preset recall (M1–M9 load V/I and activate that slot's OVP/OCP; M0 loads nothing) | 0–9 | R/W |
 | 32–41 | Battery mode, Vbat, ext. temperature, capacity (mAh), energy (mWh †) | mixed | R |
 | 48–53 | RTC (year, month, day, hour, minute, second) | — | R/W |
 | 54 | Calibration commit `0x1501` † (unverified) | — | W |
 | 55–62 | Calibration words (V/I out/back zero/scale) † | raw | R/W |
 | 66–72 | Options: take-ok, take-out, boot power, buzzer, logo, language, backlight † | raw | R/W |
-| 80 + 4·n | Preset Mn: V, I, OVP, OCP (M0 = active OVP/OCP) † | 10 mV / 10 mA | R/W |
+| 80 + 4·n | Preset Mn: V, I, OVP, OCP. M0 = power-on setpoint; writing M0 OVP/OCP sets the active thresholds | 10 mV / 10 mA | R/W |
 | 256 | Bootloader trigger: **never written** by this software | — | — |
 
 ## Safety notes
