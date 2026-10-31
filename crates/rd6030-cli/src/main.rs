@@ -366,17 +366,24 @@ async fn run(c: &Controller, config: &Config, command: Command, out: Output) -> 
         }
         Command::Protection { command } => cmd_protection(c, command, out).await,
         Command::Lock { state } => {
-            c.set_keypad_lock(state.as_bool()).await?;
-            out.emit(&json!({ "keypad_locked": state.as_bool() }), || {
-                format!(
-                    "Keypad {}",
-                    if state.as_bool() {
-                        "locked"
-                    } else {
-                        "unlocked"
+            let wanted = state.as_bool();
+            c.set_keypad_lock(wanted).await?;
+            // Report what the device says, not what was requested: fw 1.47
+            // keeps register 15 at 1 while it is remote-controlled.
+            let locked = c.keypad_locked().await?;
+            out.emit(
+                &json!({ "keypad_locked": locked, "requested": wanted }),
+                || {
+                    let mut text = format!("Keypad {}", if locked { "locked" } else { "unlocked" });
+                    if locked != wanted {
+                        text.push_str(
+                            " (the device ignored the request; the firmware shows the \
+                             lock while it is remote-controlled)",
+                        );
                     }
-                )
-            })
+                    text
+                },
+            )
         }
         Command::Preset { command } => cmd_preset(c, command, out).await,
         Command::Rtc { command } => cmd_rtc(c, command, out).await,

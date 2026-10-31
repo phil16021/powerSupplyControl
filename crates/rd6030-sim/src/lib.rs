@@ -5,10 +5,13 @@
 //! * CV/CC regulation into a resistive load (`load_ohms`; `None` = open
 //!   output): `Vout = min(Vset, Iset·R)`, `Iout = Vout / R`;
 //! * output power, input voltage and temperatures;
-//! * over-voltage / over-current protection against the M0 thresholds
-//!   (trips switch the output off; switching it on again clears the trip);
-//! * preset recall (writing register 19 loads M*n* into the active
-//!   setpoint and protection thresholds);
+//! * over-voltage / over-current protection against the *active*
+//!   thresholds (trips switch the output off; switching it on again clears
+//!   the trip). As on real hardware (fw 1.47), writing registers 82/83 sets
+//!   the active thresholds, while recalling M1..M9 activates that slot's
+//!   OVP/OCP *without* updating 82/83;
+//! * preset recall (writing register 19 = 1..9 loads M*n*'s V/I into the
+//!   setpoint registers; recalling M0 leaves the setpoint unchanged);
 //! * Modbus exceptions for unsupported functions, illegal addresses and
 //!   writes to read-only registers; requests with a bad CRC or another slave
 //!   id are ignored, as on a real bus.
@@ -37,6 +40,8 @@ pub struct SimDevice {
     pub load_ohms: Option<f32>,
     /// Number of requests served.
     pub requests: u64,
+    /// Active OVP/OCP thresholds (raw). Not directly readable on the device.
+    active_protection: (u16, u16),
 }
 
 impl Default for SimDevice {
@@ -74,7 +79,12 @@ impl SimDevice {
             registers: r,
             load_ohms: None,
             requests: 0,
+            active_protection: (0, 0),
         };
+        dev.active_protection = (
+            dev.registers[reg::M0_OVP as usize],
+            dev.registers[reg::M0_OCP as usize],
+        );
         dev.update();
         dev
     }
@@ -87,6 +97,7 @@ impl SimDevice {
     /// Set a register directly (test setup; bypasses write rules).
     pub fn set_register(&mut self, addr: u16, value: u16) {
         self.registers[addr as usize] = value;
+        self.sync_active_protection(addr);
         self.update();
     }
 
@@ -95,8 +106,8 @@ impl SimDevice {
         let r = &mut self.registers;
         let vset = f32::from(r[reg::VSET as usize]) / register::VOLTAGE_SCALE;
         let iset = f32::from(r[reg::ISET as usize]) / register::CURRENT_SCALE;
-        let ovp = f32::from(r[reg::M0_OVP as usize]) / register::VOLTAGE_SCALE;
-        let ocp = f32::from(r[reg::M0_OCP as usize]) / register::CURRENT_SCALE;
+        let ovp = f32::from(self.active_protection.0) / register::VOLTAGE_SCALE;
+        let ocp = f32::from(self.active_protection.1) / register::CURRENT_SCALE;
         let on = r[reg::OUTPUT as usize] == 1;
 
         let (mut v, mut i, mut cc) = (0.0f32, 0.0f32, false);
@@ -142,6 +153,15 @@ impl SimDevice {
         r[reg::CV_CC as usize] = u16::from(cc);
     }
 
+    /// Registers 82/83 are the write path to the active thresholds.
+    fn sync_active_protection(&mut self, addr: u16) {
+        if addr == reg::M0_OVP {
+            self.active_protection.0 = self.registers[addr as usize];
+        } else if addr == reg::M0_OCP {
+            self.active_protection.1 = self.registers[addr as usize];
+        }
+    }
+
     /// Handle a holding-register read.
     pub fn read(&mut self, addr: u16, count: u16) -> Result<Vec<u16>, u8> {
         self.requests += 1;
@@ -173,23 +193,21 @@ impl SimDevice {
             if commit {
                 continue;
             }
-            self.registers[a as usize] = value;
             if a == reg::PRESET {
                 if value > 9 {
                     return Err(ILLEGAL_DATA_VALUE);
                 }
-                let base = register::preset_base(value as u8) as usize;
-                let slot = [
-                    self.registers[base],
-                    self.registers[base + 1],
-                    self.registers[base + 2],
-                    self.registers[base + 3],
-                ];
-                self.registers[reg::VSET as usize] = slot[0];
-                self.registers[reg::ISET as usize] = slot[1];
-                self.registers[reg::M0_OVP as usize] = slot[2];
-                self.registers[reg::M0_OCP as usize] = slot[3];
+                self.registers[a as usize] = value;
+                if value >= 1 {
+                    let base = register::preset_base(value as u8) as usize;
+                    self.registers[reg::VSET as usize] = self.registers[base];
+                    self.registers[reg::ISET as usize] = self.registers[base + 1];
+                    self.active_protection = (self.registers[base + 2], self.registers[base + 3]);
+                }
+                continue;
             }
+            self.registers[a as usize] = value;
+            self.sync_active_protection(a);
         }
         self.update();
         Ok(())
@@ -370,6 +388,31 @@ mod tests {
         dev.write(reg::PRESET, &[3]).unwrap();
         assert_eq!(dev.register(reg::VSET), 800);
         assert_eq!(dev.register(reg::ISET), 100);
+        // Recalling M0 leaves the setpoint alone (as on fw 1.47).
+        dev.write(reg::VSET, &[444]).unwrap();
+        dev.write(reg::PRESET, &[0]).unwrap();
+        assert_eq!(dev.register(reg::VSET), 444);
+    }
+
+    /// Mirrors the hardware sequence: M9 holds OVP 3 V, 82/83 say 62 V.
+    #[test]
+    fn recalled_slot_protection_is_active_but_not_in_m0_registers() {
+        let mut dev = SimDevice::new();
+        let m9 = register::preset_base(9);
+        dev.write(m9, &[200, 10, 300, 100]).unwrap();
+        dev.write(reg::PRESET, &[9]).unwrap();
+        assert_eq!(dev.register(reg::M0_OVP), 6200);
+        on(&mut dev, 400, 10); // 4 V > M9's 3 V OVP
+        assert_eq!(dev.register(reg::PROTECTION), 1);
+        // Writing the slot's OVP afterwards does not change the active value…
+        dev.write(m9 + 2, &[6200]).unwrap();
+        on(&mut dev, 400, 10);
+        assert_eq!(dev.register(reg::PROTECTION), 1);
+        // …but writing 82/83 does, immediately.
+        dev.write(reg::M0_OVP, &[6200, 3020]).unwrap();
+        on(&mut dev, 400, 10);
+        assert_eq!(dev.register(reg::PROTECTION), 0);
+        assert_eq!(dev.register(reg::VOUT), 400);
     }
 
     #[test]

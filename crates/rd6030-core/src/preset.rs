@@ -8,13 +8,15 @@
 //!
 //! Each slot occupies four registers starting at `80 + 4·n`: voltage,
 //! current, over-voltage and over-current protection (same scaling as the
-//! setpoints). M0's OVP/OCP words are the *active* protection thresholds.
+//! setpoints). Writing M0's OVP/OCP words sets the active protection
+//! thresholds; recalling M1..M9 activates that slot's OVP/OCP instead.
 //!
 //! Writing the bank stores to the device's EEPROM/flash, which has limited
 //! write endurance: never write presets from sweep/ramp loops. The import
 //! helpers only write slots whose contents actually change.
 //
-// VERIFY(HIL): layout taken from the community register map (Baldanos/rd6006).
+// Layout from the community register map (Baldanos/rd6006), verified on an
+// RD6030 with fw 1.47 (write/read of M9 at 116..=119, recall via register 19).
 
 use serde::{Deserialize, Serialize};
 
@@ -126,8 +128,18 @@ fn check_slot(slot: u8) -> Result<(), DeviceError> {
 
 impl Controller {
     /// Select an active preset slot (0..=9, corresponding to M0..M9).
+    ///
+    /// Recalling a slot loads its voltage/current setpoint *and* its OVP/OCP
+    /// thresholds into the device, so the slot is read first and rejected if
+    /// its setpoint exceeds the software limits (the recall would otherwise
+    /// bypass them). Verified on hardware (fw 1.47): recalling M1..M9 loads
+    /// V/I and makes the slot's OVP/OCP active; recalling M0 leaves the
+    /// setpoint unchanged.
     pub async fn select_preset(&self, slot: u8) -> Result<(), DeviceError> {
         check_slot(slot)?;
+        let preset = self.read_preset(slot).await?;
+        self.check_voltage(preset.voltage)?;
+        self.check_current(preset.current)?;
         self.device()
             .write_single(register::reg::PRESET, u16::from(slot))
             .await
@@ -229,12 +241,21 @@ impl Controller {
                 bank.slots.len()
             )));
         }
-        for preset in &bank.slots {
-            self.check_preset(preset)?;
+        // Only slots that would actually change are validated: a bank exported
+        // from the device must re-import cleanly even if it holds factory
+        // values outside the software limits (e.g. 30.10 A presets).
+        let stored = self.export_presets().await?;
+        for (slot, preset) in bank.slots.iter().enumerate() {
+            if stored.slots.get(slot).map(|p| p.to_regs()) != Some(preset.to_regs()) {
+                self.check_preset(preset)?;
+            }
         }
         let mut written = Vec::new();
         for (slot, preset) in bank.slots.iter().enumerate() {
             let slot = slot as u8;
+            if stored.slots.get(slot as usize).map(|p| p.to_regs()) == Some(preset.to_regs()) {
+                continue;
+            }
             if self.write_preset(slot, *preset).await? {
                 written.push(slot);
             }
@@ -242,9 +263,22 @@ impl Controller {
         Ok(written)
     }
 
-    /// Read the active protection thresholds (M0 OVP/OCP).
+    /// Read the active protection thresholds.
+    ///
+    /// Firmware behaviour (verified on fw 1.47): writing registers 82/83
+    /// (M0 OVP/OCP) changes the active thresholds immediately, but recalling
+    /// M1..M9 activates *that slot's* OVP/OCP without updating 82/83. So with
+    /// M*n* (n ≥ 1) selected the active values are the slot's; with M0
+    /// selected they are 82/83. [`set_protection`](Self::set_protection)
+    /// keeps both in sync.
     pub async fn protection(&self) -> Result<Protection, DeviceError> {
-        let regs = self.device().read_holding(register::reg::M0_OVP, 2).await?;
+        let slot = self.active_preset().await?;
+        let base = if (1..PRESET_COUNT).contains(&slot) {
+            register::preset_base(slot) + 2
+        } else {
+            register::reg::M0_OVP
+        };
+        let regs = self.device().read_holding(base, 2).await?;
         if regs.len() < 2 {
             return Err(DeviceError::InvalidData);
         }
@@ -254,7 +288,12 @@ impl Controller {
         })
     }
 
-    /// Set the active protection thresholds (writes M0 OVP/OCP, EEPROM).
+    /// Set the active protection thresholds (EEPROM write).
+    ///
+    /// Writes registers 82/83, which take effect immediately. If a preset
+    /// M*n* (n ≥ 1) is selected, its OVP/OCP words are updated too, so that
+    /// [`protection`](Self::protection) reads back what is active and a later
+    /// recall of that slot does not silently restore old thresholds.
     pub async fn set_protection(&self, protection: Protection) -> Result<(), DeviceError> {
         check_range("ovp", "V", protection.ovp, register::MAX_OVP)?;
         check_range("ocp", "A", protection.ocp, register::MAX_OCP)?;
@@ -262,9 +301,17 @@ impl Controller {
             register::voltage_to_raw(protection.ovp),
             register::current_to_raw(protection.ocp),
         ];
+        let slot = self.active_preset().await?;
         self.device()
             .write_multiple(register::reg::M0_OVP, &values)
-            .await
+            .await?;
+        if (1..PRESET_COUNT).contains(&slot) {
+            let base = register::preset_base(slot) + 2;
+            if self.device().read_holding(base, 2).await? != values {
+                self.device().write_multiple(base, &values).await?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -370,5 +417,88 @@ mod tests {
             })
             .await
             .is_err());
+    }
+
+    /// The factory bank seen on real hardware (fw 1.47): M0 48 V / 1 A,
+    /// M1..M9 5 V / 30.10 A, OVP 62 V / OCP 30.20 A everywhere.
+    fn factory_bank(mock: &MockBackend) {
+        for slot in 0..PRESET_COUNT {
+            let base = register::preset_base(slot);
+            let (v, i) = if slot == 0 { (4800, 100) } else { (500, 3010) };
+            for (k, value) in [v, i, 6200, 3020].into_iter().enumerate() {
+                mock.set_register(base + k as u16, value);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn exported_factory_bank_reimports_under_tight_limits() {
+        let mock = MockBackend::rd6030();
+        factory_bank(&mock);
+        let c = controller(&mock).with_limits(crate::config::LimitsConfig {
+            max_voltage: 5.0,
+            max_current: 0.5,
+        });
+        let bank = c.export_presets().await.unwrap();
+        let parsed = PresetBank::from_json(&bank.to_json().unwrap()).unwrap();
+        assert!(c.import_presets(&parsed).await.unwrap().is_empty());
+        // A *changed* slot is still validated against the limits.
+        let mut changed = parsed.clone();
+        changed.slots[2].current = 1.0;
+        assert!(matches!(
+            c.import_presets(&changed).await,
+            Err(DeviceError::OutOfRange(_))
+        ));
+        assert_eq!(mock.register(register::preset_base(2) + 1), 3010);
+    }
+
+    #[tokio::test]
+    async fn select_preset_respects_limits() {
+        let mock = MockBackend::rd6030();
+        factory_bank(&mock);
+        let c = controller(&mock).with_limits(crate::config::LimitsConfig {
+            max_voltage: 5.0,
+            max_current: 0.5,
+        });
+        // M9 holds 30.10 A: recalling it would bypass the 0.5 A limit.
+        assert!(matches!(
+            c.select_preset(9).await,
+            Err(DeviceError::OutOfRange(_))
+        ));
+        assert_eq!(mock.register(register::reg::PRESET), 0);
+        // A slot within the limits can be recalled.
+        for (k, value) in [300u16, 20, 400, 50].into_iter().enumerate() {
+            mock.set_register(register::preset_base(4) + k as u16, value);
+        }
+        c.select_preset(4).await.unwrap();
+        assert_eq!(mock.register(register::reg::PRESET), 4);
+    }
+
+    #[tokio::test]
+    async fn protection_follows_recalled_slot() {
+        let mock = MockBackend::rd6030();
+        factory_bank(&mock);
+        let c = controller(&mock);
+        // M9 with its own thresholds is selected (as after a recall).
+        mock.set_register(register::preset_base(9) + 2, 300);
+        mock.set_register(register::preset_base(9) + 3, 100);
+        mock.set_register(register::reg::PRESET, 9);
+        assert_eq!(
+            c.protection().await.unwrap(),
+            Protection { ovp: 3.0, ocp: 1.0 }
+        );
+        // Setting protection updates 82/83 (immediate effect) and M9.
+        let p = Protection {
+            ovp: 46.0,
+            ocp: 2.0,
+        };
+        c.set_protection(p).await.unwrap();
+        assert_eq!(mock.register(register::reg::M0_OVP), 4600);
+        assert_eq!(mock.register(register::preset_base(9) + 2), 4600);
+        assert_eq!(mock.register(register::preset_base(9) + 3), 200);
+        assert_eq!(c.protection().await.unwrap(), p);
+        // With M0 selected, registers 82/83 are authoritative.
+        mock.set_register(register::reg::PRESET, 0);
+        assert_eq!(c.protection().await.unwrap(), p);
     }
 }

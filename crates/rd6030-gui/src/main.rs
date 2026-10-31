@@ -399,7 +399,10 @@ impl App {
         }
     }
 
-    fn controls(&mut self, ui: &mut egui::Ui, t: &DeviceTelemetry) {
+    /// `fresh` is false while there is no recent telemetry: the displayed
+    /// output/lock state is then unknown, so state-dependent toggles must not
+    /// be offered (a toggle built from a default "off" would switch ON).
+    fn controls(&mut self, ui: &mut egui::Ui, t: &DeviceTelemetry, fresh: bool) {
         let limits = self.controller().limits();
         let device_sp = *self.shared.setpoint.lock().unwrap();
         let device_prot = *self.shared.protection.lock().unwrap();
@@ -422,7 +425,12 @@ impl App {
                     .fixed_decimals(2)
                     .suffix(" A"),
             );
-            if ui.button("Apply").clicked() {
+            // Never write the placeholder 0 V / 0 A before the device
+            // setpoint has been loaded into the edit fields.
+            let apply = ui
+                .add_enabled(self.edits_loaded, egui::Button::new("Apply"))
+                .on_disabled_hover_text("Waiting for the device setpoint");
+            if apply.clicked() {
                 let sp = Setpoint {
                     voltage: self.vset,
                     current: self.iset,
@@ -454,8 +462,21 @@ impl App {
         });
 
         ui.horizontal(|ui| {
-            let mut output = t.output_enabled;
-            if ui.toggle_value(&mut output, "Output").changed() {
+            // Explicit ON/OFF commands instead of a toggle derived from
+            // (possibly stale) telemetry. OFF is always available.
+            let state = match (fresh, t.output_enabled) {
+                (false, _) => "Output: ?",
+                (true, true) => "Output: ON",
+                (true, false) => "Output: OFF",
+            };
+            ui.label(egui::RichText::new(state).strong());
+            let on = ui
+                .add_enabled(fresh && !t.output_enabled, egui::Button::new("On"))
+                .on_disabled_hover_text("Needs fresh telemetry and output off")
+                .clicked();
+            let off = ui.button("Off").clicked();
+            if on || off {
+                let output = on;
                 self.spawn(move |c, s| async move {
                     match c.set_output(output).await {
                         Ok(()) => s.ok(if output {
@@ -468,7 +489,13 @@ impl App {
                 });
             }
             let mut locked = t.keypad_locked;
-            if ui.toggle_value(&mut locked, "Keypad lock").changed() {
+            let lock = ui
+                .add_enabled(fresh, egui::Button::selectable(locked, "Keypad lock"))
+                .on_hover_text(
+                    "fw 1.47 shows the lock while remote-controlled and ignores unlock writes",
+                );
+            if lock.clicked() {
+                locked = !locked;
                 self.spawn(move |c, s| async move {
                     if let Err(err) = c.set_keypad_lock(locked).await {
                         s.err(&err);
@@ -662,7 +689,7 @@ impl eframe::App for App {
                 }
             });
             ui.separator();
-            self.controls(ui, &telemetry);
+            self.controls(ui, &telemetry, fresh);
             ui.separator();
             ui.heading("History");
             self.plots(ui);

@@ -82,8 +82,9 @@ pub mod reg {
     pub const OPT_BACKLIGHT: u16 = 0x0048; // 72
 
     // Preset bank M0..M9: 4 words each (V, I, OVP, OCP) starting at 80.
-    // M0 holds the *active* OVP/OCP thresholds.
-    // VERIFY(HIL): layout taken from the community register map (Baldanos/rd6006).
+    // Writing M0 OVP/OCP (82/83) sets the active thresholds immediately.
+    // Verified on hardware (fw 1.47). Recalling M1..M9 makes that slot's OVP/OCP
+    // active without updating 82/83; see `Controller::protection`.
     pub const PRESET_BANK: u16 = 0x0050; // 80
     pub const M0_OVP: u16 = 0x0052; // 82
     pub const M0_OCP: u16 = 0x0053; // 83
